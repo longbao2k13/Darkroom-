@@ -112,6 +112,43 @@
   function clamp01(x){ return x < 0 ? 0 : x > 1 ? 1 : x; }
   function clamp255(x){ return x < 0 ? 0 : x > 255 ? 255 : x; }
 
+  function getStepPrecision(step){
+    const s = String(step);
+    if (s.includes('e-')){
+      // e.g. 1e-3
+      const m = s.split('e-');
+      return m[1] ? parseInt(m[1], 10) : 6;
+    }
+    const idx = s.indexOf('.');
+    if (idx === -1) return 0;
+    return Math.min(10, s.length - idx - 1);
+  }
+
+  function snapToStep(value, min, step){
+    const v = Number(value);
+    const s = Number(step);
+    if (!isFinite(v) || !isFinite(s) || s === 0) return v;
+    const snapped = min + Math.round((v - min) / s) * s;
+    const prec = getStepPrecision(s);
+    return Number(snapped.toFixed(prec));
+  }
+
+  function clampToRangeAndStep(value, el){
+    const min = parseFloat(el.min ?? '0');
+    const max = parseFloat(el.max ?? '0');
+    const step = parseFloat(el.step ?? '1');
+    let v = Number(value);
+    if (!isFinite(v)) return parseFloat(el.value);
+    if (v < min) v = min;
+    if (v > max) v = max;
+    v = snapToStep(v, min, step);
+    // final clamp for fp issues
+    if (v < min) v = min;
+    if (v > max) v = max;
+    return v;
+  }
+
+
   function lerp(a,b,t){ return a + (b-a)*t; }
 
   function wrapHueDeg(deg){
@@ -647,6 +684,8 @@
     const el = els.sliders[id];
     if (!el) return;
     const label = els.valueLabels[id];
+    const numEl = document.getElementById(`${id}_num`);
+
     const fmt = (v) => {
       if (id === 'exposure') return Number(v).toFixed(2);
       if (id === 'contrast' || id === 'brightness' || id === 'saturation' || id === 'globalHue' || id === 'temperature' || id === 'tint' || id === 'highlights' || id === 'shadows' || id === 'whites' || id === 'blacks' || id === 'sharpness' || id === 'dehaze'){
@@ -656,16 +695,51 @@
       return v;
     };
 
-    const update = () => {
-      if (label) label.textContent = fmt(el.value);
+    const syncFromSlider = () => {
+      const v = clampToRangeAndStep(el.value, el);
+      el.value = String(v);
+      if (numEl){
+        numEl.value = String(v);
+      }
+      if (label) label.textContent = fmt(v);
       if (onChange) onChange();
       scheduleRender();
     };
 
-    el.addEventListener('input', update);
+    const syncFromNumber = () => {
+      if (!numEl) return;
+      const v = clampToRangeAndStep(numEl.value, el);
+      numEl.value = String(v);
+      el.value = String(v);
+      if (label) label.textContent = fmt(v);
+      if (onChange) onChange();
+      scheduleRender();
+    };
+
+    // init number constraints
+    if (numEl){
+      numEl.min = el.min;
+      numEl.max = el.max;
+      numEl.step = el.step;
+
+      // Prefer showing typed value exactly; clamp/snap on input.
+      // Initialize after handlers are wired.
+      el.addEventListener('input', syncFromSlider);
+      numEl.addEventListener('input', syncFromNumber);
+      // Also sync on change to catch 'enter' / blur.
+      numEl.addEventListener('change', syncFromNumber);
+    } else {
+      el.addEventListener('input', syncFromSlider);
+    }
+
     // initialize
-    update();
+    const initV = clampToRangeAndStep(el.value, el);
+    el.value = String(initV);
+    if (numEl) numEl.value = String(initV);
+    if (label) label.textContent = fmt(initV);
+    if (onChange) onChange();
   }
+
 
   function initHslGrid(){
     for (const c of COLORS){
@@ -692,25 +766,54 @@
   function makeHslRow(colorKey, fieldKey, label, shortId){
     const row = document.createElement('div');
     row.className = 'hsl-row';
+    const min = -100;
+    const max = 100;
+    const step = 0.1;
+
     row.innerHTML = `
       <div class="hsl-row__top">
         <span>${label}</span>
         <span class="hsl-row__val" data-val-for="${colorKey}-${fieldKey}">0</span>
       </div>
-      <input class="slider" type="range" min="-100" max="100" step="0.1" value="0" data-hsl="${colorKey}" data-field="${fieldKey}" />
+      <div class="control__pair control__pair--hsl">
+        <input class="slider" type="range" min="${min}" max="${max}" step="${step}" value="0" data-hsl="${colorKey}" data-field="${fieldKey}" />
+        <input class="numberInput numberInput--hsl" type="number" min="${min}" max="${max}" step="${step}" value="0" data-hsl-num="${colorKey}" data-field-num="${fieldKey}" />
+      </div>
     `;
 
-    const input = row.querySelector('input');
-    input.addEventListener('input', () => {
+    const slider = row.querySelector('input.slider');
+    const numEl = row.querySelector('input.numberInput');
+
+    const updateVal = () => {
       const cfg = state.adjustments.hsl[colorKey];
-      cfg[fieldKey] = parseFloat(input.value);
+      const v = parseFloat(slider.value);
+      cfg[fieldKey] = v;
+
       const val = row.querySelector('[data-val-for]');
       if (val){
-        const shown = fieldKey === 'hue' ? `${parseFloat(input.value).toFixed(0)}°` : `${parseFloat(input.value).toFixed(1)}`;
+        const shown = fieldKey === 'hue' ? `${v.toFixed(0)}°` : `${v.toFixed(1)}`;
         val.textContent = shown;
       }
       scheduleRender();
-    });
+    };
+
+    const syncFromSlider = () => {
+      const v = clampToRangeAndStep(slider.value, slider);
+      slider.value = String(v);
+      numEl.value = String(v);
+      updateVal();
+    };
+
+    const syncFromNumber = () => {
+      const v = clampToRangeAndStep(numEl.value, slider);
+      numEl.value = String(v);
+      slider.value = String(v);
+      updateVal();
+    };
+
+    slider.addEventListener('input', syncFromSlider);
+    numEl.addEventListener('input', syncFromNumber);
+    numEl.addEventListener('change', syncFromNumber);
 
     // init label
     const val = row.querySelector('[data-val-for]');
@@ -720,9 +823,13 @@
 
     // connect initial state
     state.adjustments.hsl[colorKey][fieldKey] = 0;
+    // ensure UI starts clamped (and updates label)
+    syncFromSlider();
 
     return row;
   }
+
+
 
   function wireControls(){
     bindSlider('exposure');
